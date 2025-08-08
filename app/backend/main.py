@@ -15,6 +15,9 @@ import subprocess
 import json
 import yt_dlp
 
+from .database import Base, engine, SessionLocal
+from .models import Media as MediaModel, Transcript as TranscriptModel, Segment as SegmentModel, Word as WordModel, Render as RenderModel
+
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_ROOT, "data")
 MEDIA_DIR = os.path.join(DATA_DIR, "media")
@@ -33,6 +36,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Create tables at startup
+Base.metadata.create_all(bind=engine)
 
 # Lazy load model at first request to save cold start
 _model = None
@@ -128,6 +134,13 @@ async def upload(file: UploadFile = File(...)):
     dest_path = os.path.join(MEDIA_DIR, f"{media_id}{ext}")
     with open(dest_path, "wb") as out:
         shutil.copyfileobj(file.file, out)
+    # DB record
+    db = SessionLocal()
+    try:
+        db.add(MediaModel(id=media_id, source='upload', original_name=file.filename, path=dest_path))
+        db.commit()
+    finally:
+        db.close()
     return {"media_id": media_id, "path": dest_path}
 
 @app.post("/transcribe/{media_id}")
@@ -179,6 +192,23 @@ async def transcribe(media_id: str, language: Optional[str] = Form(default=None)
     json_path = os.path.join(CAPTION_DIR, f"{media_id}.json")
     with open(json_path, "w", encoding="utf-8") as jf:
         jf.write(transcript.model_dump_json(indent=2))
+
+    # DB write
+    db = SessionLocal()
+    try:
+        trow = TranscriptModel(media_id=media_id, language=transcript.language, srt_path=srt_path, json_path=json_path)
+        db.add(trow)
+        db.flush()
+        for s in transcript.segments:
+            seg_row = SegmentModel(transcript_id=trow.id, start=s.start, end=s.end, text=s.text)
+            db.add(seg_row)
+            db.flush()
+            if s.words:
+                for w in s.words:
+                    db.add(WordModel(segment_id=seg_row.id, start=w.start, end=w.end, text=w.text))
+        db.commit()
+    finally:
+        db.close()
 
     return {"media_id": media_id, "srt": srt_path, "json": json_path, "transcript": transcript.model_dump()}
 
@@ -294,8 +324,20 @@ async def render(req: RenderRequest):
     ]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        success = True
+        error = None
     except subprocess.CalledProcessError as e:
-        return JSONResponse(status_code=500, content={"error": "render failed", "detail": e.stderr.decode(errors='ignore')})
+        success = False
+        error = e.stderr.decode(errors='ignore')
+        return JSONResponse(status_code=500, content={"error": "render failed", "detail": error})
+    finally:
+        # record render attempt
+        db = SessionLocal()
+        try:
+            db.add(RenderModel(media_id=req.media_id, style_id=style['id'], resolution=req.resolution, output_path=out_path, success=success, error=error))
+            db.commit()
+        finally:
+            db.close()
 
     return FileResponse(out_path, filename=os.path.basename(out_path))
 
@@ -326,7 +368,13 @@ async def ingest_youtube(url: str = Form(...)):
             break
     if not media_path:
         return JSONResponse(status_code=500, content={"error": "downloaded file not found"})
-
+    # DB record
+    db = SessionLocal()
+    try:
+        db.add(MediaModel(id=media_id, source='youtube', original_name=url, path=media_path))
+        db.commit()
+    finally:
+        db.close()
     return {"media_id": media_id, "path": media_path}
 
 class ProcessRequest(BaseModel):
