@@ -80,6 +80,12 @@ Notes:
 
 ## Configuration
 - Frontend: `NEXT_PUBLIC_API_BASE` (e.g. `http://127.0.0.1:8000`)
+- Backend DB:
+  - Set `DATABASE_URL` to Postgres for hosted deployments (Supabase/Railway/etc):
+    - Example: `export DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME`
+    - Or psycopg URL: `export DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:PORT/DBNAME`
+    - The app normalizes `postgres://` and `postgresql://` to `postgresql+psycopg://`
+  - If `DATABASE_URL` is not set, falls back to SQLite at `app/backend/data/app.db`
 - Backend directories auto‑created under `app/backend/data/`
 
 ## Development Tips
