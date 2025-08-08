@@ -1,0 +1,12 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+openai-whisper==20250625
+torch==2.8.0
+torchaudio==2.8.0
+ffmpeg-python==0.2.0
+pydantic==2.11.7
+python-multipart==0.0.20
+aiofiles==24.1.0
+srt==3.5.3
+webvtt-py==0.5.1
+rich==14.1.0

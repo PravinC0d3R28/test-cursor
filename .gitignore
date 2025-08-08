@@ -1,0 +1,35 @@
+# Python
+venv/
+ENV/
+.env
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+
+# FastAPI build artifacts
+app/backend/data/
+app/backend/__pycache__/
+app/backend/*.log
+
+# Node/Next.js
+node_modules/
+.npm/
+.next/
+out/
+*.log
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
