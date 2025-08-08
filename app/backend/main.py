@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
@@ -13,6 +13,7 @@ import srt as srt_mod
 from datetime import timedelta
 import subprocess
 import json
+import yt_dlp
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_ROOT, "data")
@@ -102,6 +103,18 @@ VIRAL_STYLES = [
         "karaoke": False,
         "uppercase": False,
     },
+    {
+        "id": "chunky-fun",
+        "label": "Chunky Fun",
+        "font": "Anton",
+        "primary_color": "#FFFBEB",
+        "emphasis_color": "#F97316",
+        "stroke_color": "#111827",
+        "stroke_width": 4,
+        "background_opacity": 0.1,
+        "karaoke": True,
+        "uppercase": False,
+    },
 ]
 
 @app.get("/styles")
@@ -167,7 +180,7 @@ async def transcribe(media_id: str, language: Optional[str] = Form(default=None)
     with open(json_path, "w", encoding="utf-8") as jf:
         jf.write(transcript.model_dump_json(indent=2))
 
-    return {"media_id": media_id, "srt": srt_path, "json": json_path, "transcript": transcript.model_dump()} 
+    return {"media_id": media_id, "srt": srt_path, "json": json_path, "transcript": transcript.model_dump()}
 
 
 def build_ass_from_transcript(transcript: Transcript, style: dict, ass_path: str, video_w: int = 1080, video_h: int = 1920):
@@ -285,6 +298,72 @@ async def render(req: RenderRequest):
         return JSONResponse(status_code=500, content={"error": "render failed", "detail": e.stderr.decode(errors='ignore')})
 
     return FileResponse(out_path, filename=os.path.basename(out_path))
+
+@app.post("/ingest/youtube")
+async def ingest_youtube(url: str = Form(...)):
+    media_id = str(uuid.uuid4())
+    out_tmpl = os.path.join(MEDIA_DIR, f"{media_id}.%(ext)s")
+    ydl_opts = {
+        'outtmpl': out_tmpl,
+        'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best',
+        'merge_output_format': 'mp4',
+        'quiet': True,
+        'noprogress': True,
+    }
+    try:
+        def _dl():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        await asyncio.to_thread(_dl)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"youtube download failed: {e}"})
+
+    # find the downloaded file
+    media_path = None
+    for name in os.listdir(MEDIA_DIR):
+        if name.startswith(media_id):
+            media_path = os.path.join(MEDIA_DIR, name)
+            break
+    if not media_path:
+        return JSONResponse(status_code=500, content={"error": "downloaded file not found"})
+
+    return {"media_id": media_id, "path": media_path}
+
+class ProcessRequest(BaseModel):
+    url: Optional[str] = None
+    style_id: str
+    language: Optional[str] = "en"
+    resolution: Optional[str] = None
+
+@app.post("/process")
+async def process(req: ProcessRequest):
+    # Step 1: ingest
+    if not req.url:
+        return JSONResponse(status_code=400, content={"error": "url required"})
+    ingest = await ingest_youtube(url=req.url)
+    if isinstance(ingest, JSONResponse):
+        return ingest
+    media_id = ingest["media_id"]
+
+    # Step 2: transcribe (force English if requested)
+    await transcribe(media_id=media_id, language=req.language)
+
+    # Step 3: render burn-in
+    rr = RenderRequest(media_id=media_id, style_id=req.style_id, resolution=req.resolution, burn_in=True, srt_only=False)
+    rendered = await render(rr)
+    return rendered
+
+@app.get("/preview/{media_id}")
+async def preview(media_id: str):
+    # Serve most recent render for this media_id if exists
+    latest = None
+    for name in sorted(os.listdir(RENDERS_DIR), reverse=True):
+        if name.startswith(media_id):
+            latest = os.path.join(RENDERS_DIR, name)
+            break
+    if not latest or not os.path.exists(latest):
+        return JSONResponse(status_code=404, content={"error": "no render found"})
+    return FileResponse(latest, filename=os.path.basename(latest), media_type="video/mp4")
 
 @app.get("/health")
 async def health():
